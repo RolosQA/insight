@@ -19,7 +19,7 @@ on:
       - ".github/workflows/scripts/discover-image-matrix.py"
   workflow_dispatch:
     inputs:
-      # Cross-repo dispatch hook: cyberfabric/cyber-insight-front's CI sends
+      # Cross-repo dispatch hook: constructorfabric/insight-front's CI sends
       # the just-published frontend image tag here so the umbrella chart
       # bumps the frontend subchart appVersion to match. When set, ALL
       # backend image-build jobs are skipped (the dispatch carries no
@@ -40,7 +40,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/cyberfabric
+  IMAGE_PREFIX: ghcr.io/constructorfabric
 
 permissions:
   contents: write   # publish-chart auto-commits Chart.yaml bumps back to main
@@ -104,7 +104,7 @@ jobs:
   # `images.<key>.image` in descriptor.yaml on every successful push without
   # `[skip ci]`, and that push re-triggers this workflow. If the descriptor
   # itself fired image rebuilds, we'd loop forever.
-  #
+  # 
   # `workflow_dispatch` with empty `frontend_tag` (legacy full-rebuild) emits
   # every entry; PR runs use the same path-filter logic as push runs.
   discover-images:
@@ -420,13 +420,30 @@ jobs:
   #
   # See ADR-0016 (descriptor.images: schema) and ADR-0001 (chart-publishing).
   bump-descriptors:
-    needs: [changes, discover-images, build-image]
+    needs:
+      - changes
+      - discover-images
+      - backend-api-gateway
+      - backend-analytics-api
+      - backend-identity
+      - toolbox
+      - build-image
+    # All siblings must finish first — bump-descriptors auto-commits to main
+    # and that push retriggers the workflow, so we must NOT pin descriptors
+    # while a backend service or toolbox is still building or has just failed
+    # tests. The `success || skipped` shape mirrors publish-chart: any of
+    # the backend/toolbox jobs may legitimately be `skipped` when `changes`
+    # didn't flag them, but they must never be `failure` or `cancelled`.
     if: |
       always()
       && github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && needs.discover-images.outputs.any == 'true'
       && needs.build-image.result == 'success'
+      && (needs.backend-api-gateway.result   == 'success' || needs.backend-api-gateway.result   == 'skipped')
+      && (needs.backend-analytics-api.result == 'success' || needs.backend-analytics-api.result == 'skipped')
+      && (needs.backend-identity.result      == 'success' || needs.backend-identity.result      == 'skipped')
+      && (needs.toolbox.result               == 'success' || needs.toolbox.result               == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       # `committed` is set to 'true' when this job actually pushed a
@@ -442,8 +459,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.INSIGHT_RELEASE_APP_ID }}
-          private-key: ${{ secrets.INSIGHT_RELEASE_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v4
         with:
@@ -498,7 +515,7 @@ jobs:
           BUILD_TAG: ${{ needs.changes.outputs.build_tag }}
         run: |
           set -euo pipefail
-          git config user.email "ci@cyberfabric.local"
+          git config user.email "ci@constructorfabric.local"
           git config user.name  "insight-ci"
 
           # Stage every descriptor.yaml that was patched. `sort -u` because
@@ -544,7 +561,7 @@ jobs:
   # ─── Umbrella chart publish ────────────────────────────────────────────────
   # Per merge to main: bump subchart appVersions for whichever services were
   # rebuilt in this run, patch-bump the umbrella version, regenerate
-  # Chart.lock, package, push to oci://ghcr.io/cyberfabric/charts/insight,
+  # Chart.lock, package, push to oci://ghcr.io/constructorfabric/charts/insight,
   # and commit the bumps back to main with [skip ci] so we don't recurse.
   #
   # Skipped in this run when bump-descriptors committed (`committed=true`):
@@ -597,8 +614,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.INSIGHT_RELEASE_APP_ID }}
-          private-key: ${{ secrets.INSIGHT_RELEASE_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v4
         with:
@@ -639,7 +656,7 @@ jobs:
           fi
 
       # Cross-repo frontend bump. The frontend lives in
-      # cyberfabric/cyber-insight-front and builds its own image; on
+      # constructorfabric/insight-front and builds its own image; on
       # publish-to-main its CI dispatches THIS workflow with frontend_tag
       # set to the just-built tag. We mirror that into the frontend
       # subchart's appVersion so the deploy path resolves the right image.
@@ -717,7 +734,7 @@ jobs:
       - name: Helm push
         run: |
           helm push "dist/insight-${{ steps.umbrella.outputs.version }}.tgz" \
-            oci://ghcr.io/cyberfabric/charts
+            oci://ghcr.io/constructorfabric/charts
 
       - name: Commit version bumps back to main
         env:
@@ -725,7 +742,7 @@ jobs:
           BUILD_TAG: ${{ needs.changes.outputs.build_tag }}
         run: |
           set -euo pipefail
-          git config user.email "ci@cyberfabric.local"
+          git config user.email "ci@constructorfabric.local"
           git config user.name  "insight-ci"
 
           git add charts/insight/Chart.yaml \
